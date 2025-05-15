@@ -8,12 +8,16 @@ import os
 import sqlite3
 import datetime
 import time
+import requests
 
 app = Flask(__name__)
 
 # 初始化 LINE Messaging API
 configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
 parser = WebhookParser(channel_secret=os.getenv("LINE_CHANNEL_SECRET"))
+
+# Bot 自身的 user_id（需在 LINE Developer Console 或日誌中獲取）
+BOT_USER_ID = os.getenv("BOT_USER_ID", "YOUR_BOT_USER_ID")  # 請設置 Bot 的 user_id
 
 # 初始化資料庫
 def init_db():
@@ -32,6 +36,9 @@ init_db()
 
 # 更新活躍紀錄
 def update_user_activity(user_id, display_name, group_id, update_time=True):
+    if user_id == BOT_USER_ID:
+        print(f"[Debug] Skipping Bot user_id: {user_id}")
+        return
     conn = sqlite3.connect("user_tracker.db")
     c = conn.cursor()
     last_active = datetime.datetime.now().isoformat() if update_time else None
@@ -50,29 +57,43 @@ def remove_user(user_id, group_id):
     conn.close()
     print(f"[Debug] Removed user: {user_id} from group: {group_id}")
 
-# 初始化群組成員
-def init_group_members(group_id):
+# 初始化群組成員（帶重試機制）
+def init_group_members(group_id, retries=3, delay=1):
     with ApiClient(configuration) as api_client:
         messaging_api = MessagingApi(api_client)
-        try:
-            member_ids = messaging_api.get_group_member_ids(group_id)
-            count = 0
-            for member_id in member_ids.member_ids:
-                try:
-                    profile = messaging_api.get_group_member_profile(group_id, member_id)
-                    update_user_activity(member_id, profile.display_name, group_id, update_time=False)
-                    count += 1
-                    time.sleep(0.2)  # 增加延遲以避免 API 限制
-                except Exception as e:
-                    print(f"[Error] Failed to get profile for {member_id} in group {group_id}: {e}")
-            print(f"[Debug] Initialized {count} members in group {group_id}")
-            return count
-        except Exception as e:
-            print(f"[Error] Failed to get group member IDs for group {group_id}: {e}")
-            return 0
+        for attempt in range(retries):
+            try:
+                member_ids = messaging_api.get_group_member_ids(group_id)
+                print(f"[Debug] Retrieved {len(member_ids.member_ids)} member IDs for group {group_id}: {member_ids.member_ids}")
+                count = 0
+                for member_id in member_ids.member_ids:
+                    if member_id == BOT_USER_ID:
+                        print(f"[Debug] Skipping Bot user_id: {member_id}")
+                        continue
+                    for profile_attempt in range(retries):
+                        try:
+                            profile = messaging_api.get_group_member_profile(group_id, member_id)
+                            update_user_activity(member_id, profile.display_name, group_id, update_time=False)
+                            count += 1
+                            time.sleep(0.5)  # 增加延遲
+                            break
+                        except Exception as e:
+                            print(f"[Error] Attempt {profile_attempt + 1} failed to get profile for {member_id} in group {group_id}: {e}")
+                            if profile_attempt < retries - 1:
+                                time.sleep(delay)
+                            else:
+                                print(f"[Error] Skipped {member_id} after {retries} attempts")
+                print(f"[Debug] Initialized {count} members in group {group_id}")
+                return count
+            except Exception as e:
+                print(f"[Error] Attempt {attempt + 1} failed to get group member IDs for group {group_id}: {e}")
+                if attempt < retries - 1:
+                    time.sleep(delay)
+        print(f"[Error] Failed to initialize group {group_id} after {retries} attempts")
+        return 0
 
 # 查詢不活躍成員
-def get_inactive_users(group_id, seconds=5):  # 調整為 5 秒
+def get_inactive_users(group_id, seconds=5):
     threshold = datetime.datetime.now() - datetime.timedelta(seconds=seconds)
     print(f"[Debug] Threshold for group {group_id}: {threshold.isoformat()}")
     conn = sqlite3.connect("user_tracker.db")
@@ -162,7 +183,6 @@ def handle_message(event):
         print(f"[Error] Failed to get profile for {user_id} in group {group_id}: {e}")
 
     if group_id:
-        # 檢查使用者是否已在資料庫，若不在則新增
         conn = sqlite3.connect("user_tracker.db")
         c = conn.cursor()
         c.execute("SELECT 1 FROM user_activity WHERE user_id = ? AND group_id = ?", (user_id, group_id))
@@ -177,8 +197,8 @@ def handle_message(event):
     reply = None
     if msg == "查詢不活躍" and group_id:
         member_count = get_member_count(group_id)
-        if member_count == 0:
-            init_group_members(group_id)  # 如果無記錄，自動初始化
+        if member_count < 2:  # 假設群組至少有 2 人
+            init_group_members(group_id)
             member_count = get_member_count(group_id)
         inactive = get_inactive_users(group_id)
         if inactive:
@@ -196,10 +216,10 @@ def handle_message(event):
     elif msg == "檢查資料庫" and group_id:
         members = get_group_members(group_id)
         if members:
-            reply = "\n".join([f"{name}: {last_active if last_active else '尚未發言'}" for _, name, last_active in members])
+            reply = "\n".join([f"ID: {user_id}, Name: {name}, Last Active: {last_active if last_active else '尚未發言'}" for user_id, name, last_active in members])
         else:
             reply = "資料庫中無此群組成員記錄。"
-            init_group_members(group_id)  # 自動初始化
+            init_group_members(group_id)
 
     if reply:
         with ApiClient(configuration) as api_client:
@@ -220,12 +240,19 @@ def handle_member_joined(event):
         messaging_api = MessagingApi(api_client)
         for member in event.joined.members:
             user_id = member.user_id
-            try:
-                profile = messaging_api.get_group_member_profile(group_id, user_id)
-                update_user_activity(user_id, profile.display_name, group_id, update_time=False)
-                print(f"[Debug] New member joined: {user_id} in group {group_id}")
-            except Exception as e:
-                print(f"[Error] Failed to get profile for {user_id} in group {group_id}: {e}")
+            if user_id == BOT_USER_ID:
+                print(f"[Debug] Skipping Bot user_id: {user_id}")
+                continue
+            for attempt in range(3):
+                try:
+                    profile = messaging_api.get_group_member_profile(group_id, user_id)
+                    update_user_activity(user_id, profile.display_name, group_id, update_time=False)
+                    print(f"[Debug] New member joined: {user_id} in group {group_id}")
+                    break
+                except Exception as e:
+                    print(f"[Error] Attempt {attempt + 1} failed to get profile for {user_id} in group {group_id}: {e}")
+                    if attempt < 2:
+                        time.sleep(1)
 
 def handle_member_left(event):
     group_id = event.source.group_id
