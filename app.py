@@ -8,7 +8,6 @@ import os
 import sqlite3
 import datetime
 import time
-import uuid
 
 app = Flask(__name__)
 
@@ -63,9 +62,9 @@ def init_group_members(group_id):
                     profile = messaging_api.get_group_member_profile(group_id, member_id)
                     update_user_activity(member_id, profile.display_name, group_id, update_time=False)
                     count += 1
-                    time.sleep(0.1)  # 避免 API 頻率限制
+                    time.sleep(0.2)  # 增加延遲以避免 API 限制
                 except Exception as e:
-                    print(f"[Error] Failed to get profile for {member_id}: {e}")
+                    print(f"[Error] Failed to get profile for {member_id} in group {group_id}: {e}")
             print(f"[Debug] Initialized {count} members in group {group_id}")
             return count
         except Exception as e:
@@ -73,7 +72,7 @@ def init_group_members(group_id):
             return 0
 
 # 查詢不活躍成員
-def get_inactive_users(group_id, seconds=5):
+def get_inactive_users(group_id, seconds=5):  # 調整為 5 秒
     threshold = datetime.datetime.now() - datetime.timedelta(seconds=seconds)
     print(f"[Debug] Threshold for group {group_id}: {threshold.isoformat()}")
     conn = sqlite3.connect("user_tracker.db")
@@ -106,6 +105,15 @@ def get_member_count(group_id):
     conn.close()
     return count
 
+# 檢查資料庫內容
+def get_group_members(group_id):
+    conn = sqlite3.connect("user_tracker.db")
+    c = conn.cursor()
+    c.execute("SELECT user_id, display_name, last_active FROM user_activity WHERE group_id = ?", (group_id,))
+    members = c.fetchall()
+    conn.close()
+    return members
+
 @app.route("/")
 def home():
     return "LINE Bot is running."
@@ -122,7 +130,7 @@ def callback():
         abort(400)
 
     for event in events:
-        print(f"[Debug] Event received: {event.__class__.__name__}")
+        print(f"[Debug] Event received: {event.__class__.__name__}, source: {event.source}")
         if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
             handle_message(event)
         elif isinstance(event, JoinEvent) and event.source.type == "group":
@@ -146,16 +154,24 @@ def handle_message(event):
             if event.source.type == "group":
                 profile = messaging_api.get_group_member_profile(group_id, user_id)
             elif event.source.type == "room":
-                room_id = event.source.room_id
-                profile = messaging_api.get_room_member_profile(room_id, user_id)
+                profile = messaging_api.get_room_member_profile(event.source.room_id, user_id)
             else:
                 profile = messaging_api.get_profile(user_id)
             display_name = profile.display_name
     except Exception as e:
-        print(f"[Error] Failed to get profile for {user_id}: {e}")
+        print(f"[Error] Failed to get profile for {user_id} in group {group_id}: {e}")
 
     if group_id:
-        update_user_activity(user_id, display_name, group_id)
+        # 檢查使用者是否已在資料庫，若不在則新增
+        conn = sqlite3.connect("user_tracker.db")
+        c = conn.cursor()
+        c.execute("SELECT 1 FROM user_activity WHERE user_id = ? AND group_id = ?", (user_id, group_id))
+        if not c.fetchone():
+            update_user_activity(user_id, display_name, group_id, update_time=False)
+            print(f"[Debug] Added missing user {user_id} to group {group_id}")
+        else:
+            update_user_activity(user_id, display_name, group_id)
+        conn.close()
 
     msg = event.message.text.lower()
     reply = None
@@ -177,6 +193,13 @@ def handle_message(event):
     elif msg == "檢查成員數" and group_id:
         count = get_member_count(group_id)
         reply = f"資料庫中記錄了 {count} 位群組成員。"
+    elif msg == "檢查資料庫" and group_id:
+        members = get_group_members(group_id)
+        if members:
+            reply = "\n".join([f"{name}: {last_active if last_active else '尚未發言'}" for _, name, last_active in members])
+        else:
+            reply = "資料庫中無此群組成員記錄。"
+            init_group_members(group_id)  # 自動初始化
 
     if reply:
         with ApiClient(configuration) as api_client:
@@ -189,7 +212,7 @@ def handle_message(event):
                     )
                 )
             except Exception as e:
-                print(f"[Error] Failed to send reply: {e}")
+                print(f"[Error] Failed to send reply for group {group_id}: {e}")
 
 def handle_member_joined(event):
     group_id = event.source.group_id
@@ -202,7 +225,7 @@ def handle_member_joined(event):
                 update_user_activity(user_id, profile.display_name, group_id, update_time=False)
                 print(f"[Debug] New member joined: {user_id} in group {group_id}")
             except Exception as e:
-                print(f"[Error] Failed to get profile for {user_id}: {e}")
+                print(f"[Error] Failed to get profile for {user_id} in group {group_id}: {e}")
 
 def handle_member_left(event):
     group_id = event.source.group_id
