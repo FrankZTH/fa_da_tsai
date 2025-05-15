@@ -72,7 +72,7 @@ def init_group_members(group_id):
             return 0
 
 # 查詢不活躍成員
-def get_inactive_users(group_id, seconds=3600):
+def get_inactive_users(group_id, seconds=5):
     threshold = datetime.datetime.now() - datetime.timedelta(seconds=seconds)
     print(f"[Debug] Threshold for group {group_id}: {threshold.isoformat()}")
     conn = sqlite3.connect("user_tracker.db")
