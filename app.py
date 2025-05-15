@@ -8,6 +8,7 @@ import os
 import sqlite3
 import datetime
 import time
+import uuid
 
 app = Flask(__name__)
 
@@ -60,7 +61,7 @@ def init_group_members(group_id):
             for member_id in member_ids.member_ids:
                 try:
                     profile = messaging_api.get_group_member_profile(group_id, member_id)
-                    update_user_activity(member_id, profile.display_name, group_id, update_time=False)  # 初始化時不更新時間
+                    update_user_activity(member_id, profile.display_name, group_id, update_time=False)
                     count += 1
                     time.sleep(0.1)  # 避免 API 頻率限制
                 except Exception as e:
@@ -77,18 +78,21 @@ def get_inactive_users(group_id, seconds=5):
     print(f"[Debug] Threshold for group {group_id}: {threshold.isoformat()}")
     conn = sqlite3.connect("user_tracker.db")
     c = conn.cursor()
-    c.execute("SELECT display_name, last_active FROM user_activity WHERE group_id = ? AND last_active IS NOT NULL", (group_id,))
+    c.execute("SELECT display_name, last_active FROM user_activity WHERE group_id = ?", (group_id,))
     all_users = c.fetchall()
     print(f"[Debug] All users in group {group_id}: {all_users}")
     inactive = []
     for name, ts in all_users:
-        try:
-            last_active = datetime.datetime.fromisoformat(ts)
-            print(f"[Debug] Comparing {name}: last_active={last_active}, threshold={threshold}")
-            if last_active < threshold:
-                inactive.append((name, ts))
-        except ValueError as e:
-            print(f"[Error] Invalid timestamp format for {name}: {ts}, error: {e}")
+        if ts is None:
+            inactive.append((name, "尚未發言"))
+        else:
+            try:
+                last_active = datetime.datetime.fromisoformat(ts)
+                print(f"[Debug] Comparing {name}: last_active={last_active}, threshold={threshold}")
+                if last_active < threshold:
+                    inactive.append((name, ts))
+            except ValueError as e:
+                print(f"[Error] Invalid timestamp format for {name}: {ts}, error: {e}")
     print(f"[Debug] Inactive users in group {group_id}: {inactive}")
     conn.close()
     return inactive
@@ -158,11 +162,13 @@ def handle_message(event):
     if msg == "查詢不活躍" and group_id:
         member_count = get_member_count(group_id)
         if member_count == 0:
-            init_group_members(group_id)  # 如果資料庫中無記錄，自動初始化
+            init_group_members(group_id)  # 如果無記錄，自動初始化
             member_count = get_member_count(group_id)
         inactive = get_inactive_users(group_id)
         if inactive:
-            reply = "\n".join([f"{name}（最後發言：{ts[:19].replace('T', ' ')}）" for name, ts in inactive])
+            reply = "\n".join([f"{name}（{ts if ts == '尚未發言' else ts[:19].replace('T', ' ')}）" for name, ts in inactive[:10]])
+            if len(inactive) > 10:
+                reply += f"\n...還有 {len(inactive) - 10} 位不活躍成員"
         else:
             reply = f"群組內無不活躍成員（已記錄 {member_count} 位成員）。"
     elif msg == "初始化群組" and group_id:
