@@ -1,5 +1,5 @@
 from flask import Flask, request, abort
-from linebot.v3.webhooks import WebhookParser
+from linebot.v3.webhook import WebhookParser
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import ReplyMessageRequest, TextMessage
 from linebot.v3.webhooks.models import MessageEvent, TextMessageContent
