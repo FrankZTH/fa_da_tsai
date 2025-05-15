@@ -53,7 +53,7 @@ def init_group_members(group_id):
             print(f"[Error] Failed to get group member IDs: {e}")
 
 # 查詢不活躍成員
-def get_inactive_users(seconds=3600):
+def get_inactive_users(seconds=5):
     threshold = datetime.datetime.now() - datetime.timedelta(seconds=seconds)
     print("[Debug] Threshold =", threshold.isoformat())
     conn = sqlite3.connect("user_tracker.db")
@@ -131,4 +131,15 @@ def handle_message(event):
         reply = "已初始化群組成員資料。"
 
     if reply:
-        with ApiClient(configuration)
+        with ApiClient(configuration) as api_client:
+            messaging_api = MessagingApi(api_client)
+            messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply)]
+                )
+            )
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
