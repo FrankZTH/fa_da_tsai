@@ -62,6 +62,7 @@ def callback():
 @handler.add(MessageEvent)
 def handle_message(event):
 
+    group_id = event.source.group_id
     user_id = event.source.user_id
     try:
         profile = line_bot_api.get_group_member_profile(group_id, user_id)
