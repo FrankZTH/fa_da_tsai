@@ -64,9 +64,10 @@ def handle_message(event):
 
     user_id = event.source.user_id
     try:
-        profile = line_bot_api.get_profile(user_id)
+        profile = line_bot_api.get_group_member_profile(group_id, user_id)
         display_name = profile.display_name
-    except:
+    except Exception as e:
+        print(f"取得群組成員資料失敗: {e}")
         display_name = "Unknown"
 
     update_user_activity(user_id, display_name)
