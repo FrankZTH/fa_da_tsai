@@ -1,6 +1,8 @@
 from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
+from linebot.v3.webhooks import WebhookHandler
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.messaging.models import ReplyMessageRequest, TextMessage
 from linebot.exceptions import InvalidSignatureError
 import os
 import sqlite3
@@ -8,8 +10,9 @@ import datetime
 
 app = Flask(__name__)
 
-# 從 Heroku 環境變數讀取
-line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
+# 初始化 LINE SDK v3
+configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
+messaging_api = MessagingApi(ApiClient(configuration))
 handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
 
 # 初始化資料庫
@@ -61,13 +64,22 @@ def callback():
 
 @handler.add(MessageEvent)
 def handle_message(event):
+    if not isinstance(event.message, TextMessageContent):
+        return
 
     user_id = event.source.user_id
+    display_name = "Unknown"
+
+    # 取得使用者名稱（群組或個人）
     try:
-        profile = line_bot_api.get_profile(user_id)
+        if event.source.type == "group":
+            group_id = event.source.group_id
+            profile = messaging_api.get_group_member_profile(group_id, user_id)
+        else:
+            profile = messaging_api.get_profile(user_id)
         display_name = profile.display_name
-    except:
-        display_name = "Unknown"
+    except Exception as e:
+        print(f"無法取得使用者名稱：{e}")
 
     update_user_activity(user_id, display_name)
 
@@ -78,9 +90,13 @@ def handle_message(event):
             reply = "\n".join([f"{name}（最後發言：{time[:10]}）" for name, time in inactive])
         else:
             reply = "沒有發現不活躍的成員。"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
-
+        messaging_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=reply)]
+            )
+        )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
