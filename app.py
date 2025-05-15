@@ -106,8 +106,8 @@ def init_group_members(group_id, messaging_api, reply_token=None, retries=3, del
     return count
 
 # 查詢不活躍成員
-def get_inactive_users(group_id, seconds=5):
-    threshold = datetime.datetime.now() - datetime.timedelta(seconds=seconds)
+def get_inactive_users(group_id, days=7):
+    threshold = datetime.datetime.now() - datetime.timedelta(days=days)
     print(f"[Debug] Threshold for group {group_id}: {threshold.isoformat()}")
     conn = sqlite3.connect("user_tracker.db")
     c = conn.cursor()
