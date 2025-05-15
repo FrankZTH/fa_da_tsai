@@ -2,7 +2,7 @@ from flask import Flask, request, abort
 from linebot.v3.webhook import WebhookParser
 from linebot.v3.messaging import MessagingApi, Configuration, ApiClient
 from linebot.v3.messaging.models import ReplyMessageRequest, TextMessage
-from linebot.v3.webhooks.models import MessageEvent, TextMessageContent
+from linebot.v3.webhooks.models import MessageEvent, TextMessageContent, JoinEvent
 
 import os
 import sqlite3
@@ -37,7 +37,23 @@ def update_user_activity(user_id, display_name):
     conn.commit()
     conn.close()
 
-def get_inactive_users(seconds=5):
+# 初始化群組成員
+def init_group_members(group_id):
+    with ApiClient(configuration) as api_client:
+        messaging_api = MessagingApi(api_client)
+        try:
+            member_ids = messaging_api.get_group_member_ids(group_id)
+            for member_id in member_ids.member_ids:
+                try:
+                    profile = messaging_api.get_group_member_profile(group_id, member_id)
+                    update_user_activity(member_id, profile.display_name)
+                except Exception as e:
+                    print(f"[Error] Failed to get profile for {member_id}: {e}")
+        except Exception as e:
+            print(f"[Error] Failed to get group member IDs: {e}")
+
+# 查詢不活躍成員
+def get_inactive_users(seconds=3600):
     threshold = datetime.datetime.now() - datetime.timedelta(seconds=seconds)
     print("[Debug] Threshold =", threshold.isoformat())
     conn = sqlite3.connect("user_tracker.db")
@@ -45,9 +61,18 @@ def get_inactive_users(seconds=5):
     c.execute("SELECT display_name, last_active FROM user_activity")
     all_users = c.fetchall()
     print("[Debug] All users:", all_users)
+    inactive = []
+    for name, ts in all_users:
+        try:
+            last_active = datetime.datetime.fromisoformat(ts)
+            print(f"[Debug] Comparing {name}: last_active={last_active}, threshold={threshold}")
+            if last_active < threshold:
+                inactive.append((name, ts))
+        except ValueError as e:
+            print(f"[Error] Invalid timestamp format for {name}: {ts}, error: {e}")
+    print("[Debug] Inactive users:", inactive)
     conn.close()
-    return [(name, ts) for name, ts in all_users if ts < threshold.isoformat()]
-
+    return inactive
 
 @app.route("/")
 def home():
@@ -67,6 +92,8 @@ def callback():
     for event in events:
         if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
             handle_message(event)
+        elif isinstance(event, JoinEvent) and event.source.type == "group":
+            init_group_members(event.source.group_id)
 
     return "OK"
 
@@ -92,22 +119,16 @@ def handle_message(event):
     update_user_activity(user_id, display_name)
 
     msg = event.message.text.lower()
+    reply = None
     if msg == "查詢不活躍":
         inactive = get_inactive_users()
         if inactive:
             reply = "\n".join([f"{name}（最後發言：{ts[:19].replace('T', ' ')}）" for name, ts in inactive])
         else:
             reply = "沒有發現不活躍的成員。"
+    elif msg == "初始化群組" and event.source.type == "group":
+        init_group_members(event.source.group_id)
+        reply = "已初始化群組成員資料。"
 
-        with ApiClient(configuration) as api_client:
-            messaging_api = MessagingApi(api_client)
-            messaging_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=reply)]
-                )
-            )
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    if reply:
+        with ApiClient(configuration)
