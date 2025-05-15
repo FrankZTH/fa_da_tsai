@@ -37,15 +37,17 @@ def update_user_activity(user_id, display_name):
     conn.commit()
     conn.close()
 
-# 查詢不活躍用戶（預設5分鐘內沒講話）
 def get_inactive_users(seconds=5):
     threshold = datetime.datetime.now() - datetime.timedelta(seconds=seconds)
+    print("[Debug] Threshold =", threshold.isoformat())
     conn = sqlite3.connect("user_tracker.db")
     c = conn.cursor()
     c.execute("SELECT display_name, last_active FROM user_activity")
     all_users = c.fetchall()
+    print("[Debug] All users:", all_users)
     conn.close()
     return [(name, ts) for name, ts in all_users if ts < threshold.isoformat()]
+
 
 @app.route("/")
 def home():
