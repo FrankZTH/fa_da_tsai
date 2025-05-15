@@ -42,8 +42,8 @@ def update_user_activity(user_id, display_name):
     conn.close()
 
 # === 查詢不活躍用戶 ===
-def get_inactive_users(days=30):
-    threshold = datetime.datetime.now() - datetime.timedelta(days=days)
+def get_inactive_users(seconds=10):
+    threshold = datetime.datetime.now() - datetime.timedelta(seconds=seconds)
     conn = sqlite3.connect("user_tracker.db")
     c = conn.cursor()
     c.execute("SELECT display_name, last_active FROM user_activity")
